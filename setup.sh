@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 3AX-UI VPS bootstrap v0.4 - Ubuntu 22.04 / 24.04
+# 3AX-UI VPS bootstrap v0.5 - Ubuntu 22.04 / 24.04
 # Run on a NEW VPS from the hosting provider's rescue/web console.
 set -Eeuo pipefail
 umask 077
@@ -99,10 +99,25 @@ chmod 700 "$BACKUP_DIR"
 # Cyrillic font settings affect a Linux virtual console, not the entire OS language.
 CURRENT_STAGE='Настройка шрифта консоли'
 export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+export UCF_FORCE_CONFFOLD=1
 export LANG=C.UTF-8 LC_ALL=C.UTF-8
+
+# Automate APT / dpkg prompts without overwriting hoster-customized conffiles.
+# -y handles regular APT confirmations, --force-confold handles modified
+# configuration files such as /etc/cloud/cloud.cfg. This applies only here,
+# and does not create system-wide APT configuration.
+apt_auto() {
+  apt-get -y -o 'Dpkg::Options::=--force-confold' "$@"
+}
+
+# Keep a copy of the cloud-init configuration before any package changes.
+if [[ -f /etc/cloud/cloud.cfg ]]; then
+  cp -a /etc/cloud/cloud.cfg "$BACKUP_DIR/cloud.cfg.before-upgrade"
+fi
 printf '[INFO] Preparing Cyrillic console font (keeping OS language unchanged)...\n'
-apt-get update
-apt-get install -y console-setup console-setup-linux kbd openssh-client
+apt_auto update
+apt_auto install console-setup console-setup-linux kbd openssh-client
 if [[ -f /etc/default/console-setup ]]; then
   cp -a /etc/default/console-setup "$BACKUP_DIR/console-setup.orig"
   for entry in 'CHARMAP="UTF-8"' 'CODESET="Uni2"' 'FONTFACE="Terminus"' 'FONTSIZE="8x16"'; do
@@ -178,14 +193,14 @@ rm -f "$KEYCHECK_FILE"
 CURRENT_STAGE='Обновление Ubuntu и установка пакетов'
 step "$(msg '1/8 — Обновление Ubuntu и установка пакетов' '1/8 - System updates and packages')"
 export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get upgrade -y
-apt-get install -y ca-certificates curl openssh-server sudo fail2ban python3-systemd ufw nano dkms iproute2
+apt_auto update
+apt_auto upgrade
+apt_auto install ca-certificates curl openssh-server sudo fail2ban python3-systemd ufw nano dkms iproute2
 if [[ "$(uname -r)" == *-generic ]]; then
-  apt-get install -y linux-generic linux-headers-generic
+  apt_auto install linux-generic linux-headers-generic
 else
   warn "$(msg "Нестандартное ядро $(uname -r): linux-generic не устанавливаем." "Nonstandard kernel $(uname -r): skipping linux-generic.")"
-  apt-get install -y "linux-headers-$(uname -r)" || warn "$(msg 'Заголовки ядра не найдены. Проверьте DKMS.' 'Kernel headers unavailable; check DKMS.')"
+  apt_auto install "linux-headers-$(uname -r)" || warn "$(msg 'Заголовки ядра не найдены. Проверьте DKMS.' 'Kernel headers unavailable; check DKMS.')"
 fi
 
 # 2 - Create a sudo user and authorize their public key.
@@ -264,9 +279,10 @@ fi
 systemctl restart ssh.service
 ss -H -ltn "sport = :${SSH_PORT}" | grep -q . || fail 'SSH не слушает порт 1335.'
 
-VERIFY_DIR=/run/3ax-ssh-verify
-install -d -m 700 -o root -g root "$VERIFY_DIR"
-VERIFY_MARKER="$VERIFY_DIR/verified"
+# The backup directory already exists and persists across reboots.
+# Avoid ephemeral /run/ markers or paths that the second SSH session cannot find.
+VERIFY_MARKER="$BACKUP_DIR/ssh-verified"
+[[ -d "$BACKUP_DIR" ]] || fail 'Missing verification directory (backup directory).'
 rm -f -- "$VERIFY_MARKER"
 printf '\n%s\n' "$(msg 'ПРОВЕРКА: откройте ВТОРОЙ терминал на своём компьютере, НЕ закрывая консоль хостинга.' 'VERIFICATION: open a SECOND terminal on your computer. Keep this console open.')"
 printf 'ssh -o PreferredAuthentications=publickey -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -p %s %s@%s\n' "$SSH_PORT" "$SSH_USER" 'SERVER_IP'
