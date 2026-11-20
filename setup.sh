@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 3AX-UI VPS bootstrap - Ubuntu 22.04 / 24.04
+# 3AX-UI VPS bootstrap v0.4 - Ubuntu 22.04 / 24.04
 # Run on a NEW VPS from the hosting provider's rescue/web console.
 set -Eeuo pipefail
 umask 077
@@ -10,7 +10,7 @@ readonly PANEL_PORT=13350
 TRUSTED_IP=''
 readonly UPSTREAM_URL='https://raw.githubusercontent.com/coinman-dev/3ax-ui/main/install.sh'
 
-# Own messages are Russian after preparing UTF-8. Vendor questions may be English.
+# Own messages use UTF-8 Russian without changing the global OS locale.
 CURRENT_STAGE='Начальная проверка'
 UI_READY=0
 LAST_ERROR=''
@@ -19,12 +19,27 @@ FINAL_LOGIN=''
 FINAL_PASSWORD=''
 FINAL_URL=''
 BACKUP_DIR=''
+SSH_USER=''
+SSH_PUBLIC_KEY=''
+SSH_PASSWORD=''
+SSH_PASSWORD_REPEAT=''
+COLORS=0
+if [[ -t 1 && "${TERM:-dumb}" != dumb && -z "${NO_COLOR:-}" ]]; then COLORS=1; fi
 
 msg() {
   if [[ "${SETUP_LANG:-ru}" == en || "$UI_READY" != 1 ]]; then printf '%s' "$2"; else printf '%s' "$1"; fi
 }
-info() { printf '\n[INFO] %s\n' "$*"; }
-warn() { printf '\n[WARN] %s\n' "$*" >&2; WARNINGS+=("$*"); }
+color() {
+  local code="$1"; shift
+  if ((COLORS)); then printf '\033[%sm%s\033[0m' "$code" "$*"; else printf '%s' "$*"; fi
+}
+info() { printf '\n%s %s\n' "$(color '1;36' '[INFO]')" "$*"; }
+step() {
+  printf '\n\n%s\n' "$(color '1;36' '==================================================')"
+  printf '%s\n' "$(color '1;36' " $*")"
+  printf '%s\n\n' "$(color '1;36' '==================================================')"
+}
+warn() { printf '\n%s %s\n' "$(color '1;33' '[WARN]')" "$*" >&2; WARNINGS+=("$*"); }
 fail() { LAST_ERROR="$*"; exit 1; }
 on_error() {
   local code="$1" line="$2"
@@ -35,9 +50,9 @@ on_exit() {
   trap - ERR EXIT
   printf '\n===============================================\n'
   if ((status == 0)); then
-    printf '%s\n' "$(msg 'Установка завершена. Ошибок нет.' 'Installation complete. No errors.')"
+    printf '%s\n' "$(color '1;32' "$(msg 'Установка завершена. Ошибок нет.' 'Installation complete. No errors.')")"
   else
-    printf '%s\n' "$(msg 'Установка завершилась с ошибкой.' 'Installation failed.')"
+    printf '%s\n' "$(color '1;31' "$(msg 'Установка завершилась с ошибкой.' 'Installation failed.')")"
     printf '%s\n' "$(msg 'Этап:' 'Step:') ${CURRENT_STAGE}"
     printf '%s\n' "$(msg 'Причина:' 'Reason:') ${LAST_ERROR:-код ${status}}"
   fi
@@ -45,12 +60,17 @@ on_exit() {
     printf '%s\n' "$(msg 'Предупреждения:' 'Warnings:')"
     printf ' - %s\n' "${WARNINGS[@]}"
   fi
-  if [[ -n "$FINAL_LOGIN" && -n "$FINAL_PASSWORD" && -n "$FINAL_URL" ]]; then
+  if ((status == 0)) && [[ -n "$FINAL_LOGIN" && -n "$FINAL_PASSWORD" && -n "$FINAL_URL" ]]; then
     printf '\n%s\n' "$(msg 'ДАННЫЕ ДЛЯ ВХОДА В 3AX-UI' '3AX-UI PANEL LOGIN')"
     printf '%s %s\n' "$(msg 'Ссылка:' 'URL:')" "$FINAL_URL"
     printf '%s %s\n' "$(msg 'Логин:' 'Username:')" "$FINAL_LOGIN"
     printf '%s %s\n' "$(msg 'Пароль:' 'Password:')" "$FINAL_PASSWORD"
     printf '%s\n' "$(msg 'Сохраните пароль в надёжном месте. Не публикуйте этот экран.' 'Store password securely. Do not share this screen.')"
+    if [[ -n "$SSH_USER" ]]; then
+      printf '\n%s %s\n' "$(msg 'Пользователь SSH:' 'SSH user:')" "$SSH_USER"
+      printf '%s\n' "$(msg "Подключение: ssh -p ${SSH_PORT} ${SSH_USER}@IP_СЕРВЕРА" "Connect: ssh -p ${SSH_PORT} ${SSH_USER}@SERVER_IP")"
+      printf '%s\n' "$(msg 'Для SSH используется только ваш приватный ключ.' 'SSH accepts only the matching private key.')"
+    fi
   fi
   if [[ -n "$BACKUP_DIR" && $status -ne 0 ]]; then
     printf '%s %s\n' "$(msg 'Резервные копии:' 'Backups:')" "$BACKUP_DIR"
@@ -75,26 +95,14 @@ BACKUP_DIR="/root/3ax-setup-backup-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$BACKUP_DIR"
 chmod 700 "$BACKUP_DIR"
 
-# First step: install Cyrillic UTF-8 locale and a Linux console font.
-# This cannot change a font embedded in a hosting provider's web terminal.
-CURRENT_STAGE='Настройка русского языка и шрифта консоли'
+# Use UTF-8 only for this setup process. DO NOT change the OS default locale.
+# Cyrillic font settings affect a Linux virtual console, not the entire OS language.
+CURRENT_STAGE='Настройка шрифта консоли'
 export DEBIAN_FRONTEND=noninteractive
 export LANG=C.UTF-8 LC_ALL=C.UTF-8
-printf '[INFO] Preparing UTF-8 / Cyrillic console...\n'
+printf '[INFO] Preparing Cyrillic console font (keeping OS language unchanged)...\n'
 apt-get update
-apt-get install -y locales console-setup console-setup-linux kbd
-if grep -q '^# *ru_RU.UTF-8 UTF-8' /etc/locale.gen; then
-  sed -i 's/^# *ru_RU.UTF-8 UTF-8/ru_RU.UTF-8 UTF-8/' /etc/locale.gen
-fi
-if ! grep -q '^ru_RU.UTF-8 UTF-8' /etc/locale.gen; then
-  echo 'ru_RU.UTF-8 UTF-8' >> /etc/locale.gen
-fi
-locale-gen ru_RU.UTF-8 >/dev/null
-update-locale LANG=ru_RU.UTF-8
-unset LC_ALL
-if [[ "${SETUP_LANG:-ru}" != en ]]; then
-  export LANG=ru_RU.UTF-8 LC_MESSAGES=ru_RU.UTF-8 LC_CTYPE=ru_RU.UTF-8
-fi
+apt-get install -y console-setup console-setup-linux kbd openssh-client
 if [[ -f /etc/default/console-setup ]]; then
   cp -a /etc/default/console-setup "$BACKUP_DIR/console-setup.orig"
   for entry in 'CHARMAP="UTF-8"' 'CODESET="Uni2"' 'FONTFACE="Terminus"' 'FONTSIZE="8x16"'; do
@@ -105,7 +113,6 @@ if [[ -f /etc/default/console-setup ]]; then
       printf '%s\n' "$entry" >> /etc/default/console-setup
     fi
   done
-  # Only attempt to change the active font on a real Linux virtual console.
   CONSOLE_TTY=$(tty 2>/dev/null || true)
   if [[ -z "${SSH_CONNECTION:-}${SSH_TTY:-}" ]] &&
      [[ "${TERM:-}" == linux || "$CONSOLE_TTY" =~ ^/dev/tty[0-9]+$ ]]; then
@@ -117,7 +124,7 @@ UI_READY=1
 CURRENT_STAGE='Подтверждение и исходные параметры'
 info "$(msg "Ubuntu ${VERSION_ID}; резервные копии: ${BACKUP_DIR}" "Ubuntu ${VERSION_ID}; backups: ${BACKUP_DIR}")"
 echo "$(msg 'Внимание: скрипт изменяет SSH, UFW, Fail2ban и DNS.' 'WARNING: The script will change SSH, UFW, Fail2ban and DNS.')"
-echo "$(msg 'Прежний SSH-порт не закрываем до проверки нового порта 1335.' 'The old SSH port remains open until 1335 is tested.')"
+echo "$(msg 'SSH: сначала проверим ключ на 1335, затем отключим root, пароль и порт 22.' 'SSH: test the key on 1335 first, then disable root, passwords and port 22.')"
 if [[ -n "${SSH_CONNECTION:-}${SSH_TTY:-}" ]]; then
   warn "$(msg 'Запуск через SSH: Netplan изменяться не будет.' 'Running over SSH: Netplan changes will be skipped.')"
 fi
@@ -140,13 +147,40 @@ if [[ -n "$TRUSTED_IP" ]]; then
   done
 fi
 
+# The user account and public SSH key are requested on the provider console.
+# Never store passwords or private keys in this public GitHub repository.
+read -r -p "$(msg 'Имя нового пользователя SSH: ' 'New SSH username: ')" SSH_USER
+[[ "$SSH_USER" =~ ^[a-z_][a-z0-9_-]{0,30}$ ]] || fail 'Недопустимое имя пользователя.'
+[[ "$SSH_USER" != root ]] || fail 'Для SSH нужен отдельный пользователь, не root.'
+if getent passwd "$SSH_USER" >/dev/null; then
+  fail 'Пользователь уже существует. Используйте новый VPS или проверьте систему.'
+fi
+
+read -r -s -p "$(msg 'Пароль пользователя для sudo (ввод скрыт): ' 'User password for sudo (hidden): ')" SSH_PASSWORD
+printf '\n'
+read -r -s -p "$(msg 'Повторите пароль: ' 'Repeat password: ')" SSH_PASSWORD_REPEAT
+printf '\n'
+[[ "$SSH_PASSWORD" == "$SSH_PASSWORD_REPEAT" && ${#SSH_PASSWORD} -ge 12 ]] || fail 'Пароли не совпадают или содержат менее 12 символов.'
+unset SSH_PASSWORD_REPEAT
+
+printf '%s\n' "$(msg 'Вставьте ПУБЛИЧНЫЙ SSH-ключ одной строкой (ssh-ed25519 AAAA...):' 'Paste the PUBLIC SSH key on one line (ssh-ed25519 AAAA...):')"
+IFS= read -r SSH_PUBLIC_KEY
+[[ "$SSH_PUBLIC_KEY" =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|sk-ssh-ed25519@openssh.com|sk-ecdsa-sha2-nistp256@openssh.com)[[:space:]]+[A-Za-z0-9+/]+={0,2}([[:space:]].*)?$ ]] || fail 'Неверный формат публичного SSH-ключа. Приватный ключ вставлять нельзя.'
+KEYCHECK_FILE=$(mktemp)
+printf '%s\n' "$SSH_PUBLIC_KEY" > "$KEYCHECK_FILE"
+if ! ssh-keygen -l -f "$KEYCHECK_FILE" >/dev/null 2>&1; then
+  rm -f "$KEYCHECK_FILE"
+  fail 'Не удалось проверить публичный SSH-ключ.'
+fi
+rm -f "$KEYCHECK_FILE"
+
 # 1 - Update and essential packages.
 CURRENT_STAGE='Обновление Ubuntu и установка пакетов'
-info "$(msg '1/7 — Обновление Ubuntu и установка пакетов' '1/7 - System updates and packages')"
+step "$(msg '1/8 — Обновление Ubuntu и установка пакетов' '1/8 - System updates and packages')"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get upgrade -y
-apt-get install -y ca-certificates curl openssh-server fail2ban python3-systemd ufw nano dkms iproute2
+apt-get install -y ca-certificates curl openssh-server sudo fail2ban python3-systemd ufw nano dkms iproute2
 if [[ "$(uname -r)" == *-generic ]]; then
   apt-get install -y linux-generic linux-headers-generic
 else
@@ -154,17 +188,28 @@ else
   apt-get install -y "linux-headers-$(uname -r)" || warn "$(msg 'Заголовки ядра не найдены. Проверьте DKMS.' 'Kernel headers unavailable; check DKMS.')"
 fi
 
-# 2 - Open ports BEFORE restarting SSH or enabling UFW.
+# 2 - Create a sudo user and authorize their public key.
+CURRENT_STAGE='Создание пользователя и установка SSH-ключа'
+step "$(msg '2/8 — Создание пользователя и установка SSH-ключа' '2/8 - Creating user and installing SSH public key')"
+adduser --disabled-password --gecos '' "$SSH_USER"
+printf '%s:%s\n' "$SSH_USER" "$SSH_PASSWORD" | chpasswd
+unset SSH_PASSWORD
+usermod -aG sudo "$SSH_USER"
+SSH_HOME=$(getent passwd "$SSH_USER" | cut -d: -f6)
+[[ -n "$SSH_HOME" && -d "$SSH_HOME" ]] || fail 'Не удалось найти домашний каталог пользователя.'
+install -d -m 700 -o "$SSH_USER" -g "$SSH_USER" "$SSH_HOME/.ssh"
+printf '%s\n' "$SSH_PUBLIC_KEY" > "$SSH_HOME/.ssh/authorized_keys"
+chown "$SSH_USER:$SSH_USER" "$SSH_HOME/.ssh/authorized_keys"
+chmod 600 "$SSH_HOME/.ssh/authorized_keys"
+unset SSH_PUBLIC_KEY
+id -nG "$SSH_USER" | tr ' ' '\n' | grep -qx sudo || fail 'Пользователь не добавлен в sudo.'
+
 CURRENT_STAGE='Настройка UFW'
-info "$(msg '2/7 — Настройка UFW' '2/7 - UFW firewall rules')"
+step "$(msg '3/8 — Настройка UFW' '3/8 - UFW firewall rules')"
 cp -a /etc/default/ufw "$BACKUP_DIR/ufw-default"
 sed -i -E 's/^IPV6=.*/IPV6=yes/' /etc/default/ufw
-# Keep existing SSH listeners reachable for safety, even on a nonstandard VPS.
-mapfile -t OLD_SSH_PORTS < <(/usr/sbin/sshd -T | awk '$1 == "port" && $2 ~ /^[0-9]+$/ {print $2}' | sort -un)
-(( ${#OLD_SSH_PORTS[@]} > 0 )) || OLD_SSH_PORTS=(22)
-for port in "${OLD_SSH_PORTS[@]}"; do
-  ufw allow "${port}/tcp"
-done
+# Keep the old access port until the NEW account has been verified remotely.
+ufw allow 22/tcp
 ufw allow "${SSH_PORT}/tcp"
 ufw allow "${PANEL_PORT}/tcp"
 ufw allow 13133/tcp
@@ -172,53 +217,115 @@ ufw allow 13133/udp
 ufw allow 20304/udp
 ufw allow 13131/udp
 ufw allow 80/tcp
-# Port 443 is intentionally NOT opened.
 ufw default deny incoming
 ufw default allow outgoing
 ufw --force enable
-ufw status verbose
 
-# 3 - Add SSH 1335 while retaining the currently working port(s).
-CURRENT_STAGE='Настройка SSH'
-info "$(msg '3/7 — SSH 1335, сохраняем старый порт' '3/7 - SSH port 1335; preserving old port')"
+# 4 - TWO-PHASE SSH hardening. Never remove the original access path before
+# verifying an authenticated connection using the NEW key and sudo account.
+CURRENT_STAGE='Проверка нового SSH-доступа'
+step "$(msg '4/8 — Проверка SSH-ключа на порту 1335' '4/8 - Verify SSH key on port 1335')"
 cp -a /etc/ssh "$BACKUP_DIR/ssh"
 mkdir -p /etc/ssh/sshd_config.d
 SSH_DROPIN=/etc/ssh/sshd_config.d/00-3ax-setup.conf
 if ! grep -Eq '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config.d/\*' /etc/ssh/sshd_config; then
-  warn "$(msg 'В sshd_config нет Include, добавляем.' 'Missing Include in sshd_config; adding it.')"
   { echo 'Include /etc/ssh/sshd_config.d/*.conf'; cat /etc/ssh/sshd_config; } > "$BACKUP_DIR/sshd_config.new"
   cp "$BACKUP_DIR/sshd_config.new" /etc/ssh/sshd_config
 fi
-{
-  echo '# Managed by 3ax-server-setup. Keep old port(s) until external SSH is verified.'
-  printf 'Port %s\n' "${OLD_SSH_PORTS[@]}" "$SSH_PORT" | sort -u
-} > "$SSH_DROPIN"
+# Transitional state: both the old and new ports stay open, and existing
+# authentication remains available. New account can already use its key.
+cat > "$SSH_DROPIN" <<SSHCONF
+# Managed by 3ax-server-setup. Temporary verification phase.
+Port 22
+Port ${SSH_PORT}
+PubkeyAuthentication yes
+# Keep existing authentication available until new key-based access is tested.
+# The test command below explicitly forbids password/interactive fallbacks.
+SSHCONF
 chmod 600 "$SSH_DROPIN"
 
-# Ubuntu 24.04 may use ssh.socket; ensure every requested SSH port is listening.
+# Ubuntu 24.04 may use systemd SSH socket activation.
+SSH_SOCKET_ACTIVE=0
 if systemctl is-active --quiet ssh.socket || systemctl is-enabled --quiet ssh.socket; then
+  SSH_SOCKET_ACTIVE=1
   mkdir -p /etc/systemd/system/ssh.socket.d
-  {
-    echo '[Socket]'
-    echo 'ListenStream='
-    printf 'ListenStream=%s\n' "${OLD_SSH_PORTS[@]}" "$SSH_PORT" | sort -u
-  } > /etc/systemd/system/ssh.socket.d/90-3ax-setup.conf
+  cat > /etc/systemd/system/ssh.socket.d/90-3ax-setup.conf <<SSHUNIT
+[Socket]
+ListenStream=
+ListenStream=22
+ListenStream=${SSH_PORT}
+SSHUNIT
   systemctl daemon-reload
 fi
-/usr/sbin/sshd -t || fail 'Invalid SSH configuration. Restore /etc/ssh from the backup if needed.'
-/usr/sbin/sshd -T | awk -v p="$SSH_PORT" '$1 == "port" && $2 == p {found=1} END {exit !found}' || \
-  fail 'sshd does not report port 1335. Check other SSH configuration files.'
-if systemctl is-active --quiet ssh.socket; then
+/usr/sbin/sshd -t || fail 'Неверная временная конфигурация SSH.'
+if ((SSH_SOCKET_ACTIVE)) && systemctl is-active --quiet ssh.socket; then
   systemctl restart ssh.socket
 fi
 systemctl restart ssh.service
-ss -H -ltn "sport = :${SSH_PORT}" | grep -q . || \
-  fail 'Port 1335 is not listening. Check ssh.service and ssh.socket via the provider console.'
-info "$(msg 'SSH слушает порт 1335. Старые порты пока открыты.' 'SSH listening on 1335. Old ports remain open.')"
+ss -H -ltn "sport = :${SSH_PORT}" | grep -q . || fail 'SSH не слушает порт 1335.'
 
-# 4 - Fail2ban (journal backend works with Ubuntu 22.04 and 24.04).
+VERIFY_DIR=/run/3ax-ssh-verify
+install -d -m 700 -o root -g root "$VERIFY_DIR"
+VERIFY_MARKER="$VERIFY_DIR/verified"
+rm -f -- "$VERIFY_MARKER"
+printf '\n%s\n' "$(msg 'ПРОВЕРКА: откройте ВТОРОЙ терминал на своём компьютере, НЕ закрывая консоль хостинга.' 'VERIFICATION: open a SECOND terminal on your computer. Keep this console open.')"
+printf 'ssh -o PreferredAuthentications=publickey -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -p %s %s@%s\n' "$SSH_PORT" "$SSH_USER" 'SERVER_IP'
+printf '%s\n' "$(msg 'Убедитесь, что вход выполнен по вашему ПРИВАТНОМУ ключу.' 'Confirm login uses YOUR private SSH key.')"
+printf '%s\n' "$(msg 'На сервере в новом SSH-сеансе выполните:' 'In the NEW SSH session, run:')"
+printf 'sudo touch %s\n' "$VERIFY_MARKER"
+printf '%s\n' "$(msg 'Введите пароль sudo, затем вернитесь в эту веб-консоль.' 'Enter the sudo password, then return to this provider console.')"
+while true; do
+  read -r -p "$(msg 'Если команда успешно выполнена, нажмите Enter (Ctrl+C — отменить): ' 'After the command succeeds, press Enter (Ctrl+C to abort): ')" _
+  if [[ -f "$VERIFY_MARKER" && "$(stat -c %u "$VERIFY_MARKER")" == 0 ]]; then break; fi
+  warn "$(msg 'Подтверждение не найдено. Проверьте SSH-ключ и sudo, затем повторите.' 'No verified marker; test SSH key and sudo, then retry.')"
+done
+
+# Now—and only now—close the legacy port and disable root/password logins.
+CURRENT_STAGE='Окончательное усиление безопасности SSH'
+cat > "$SSH_DROPIN" <<SSHCONF
+# Managed by 3ax-server-setup. Verified key-only access.
+Port ${SSH_PORT}
+PermitRootLogin no
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+AuthenticationMethods publickey
+PermitEmptyPasswords no
+SSHCONF
+if ((SSH_SOCKET_ACTIVE)); then
+  cat > /etc/systemd/system/ssh.socket.d/90-3ax-setup.conf <<SSHUNIT
+[Socket]
+ListenStream=
+ListenStream=${SSH_PORT}
+SSHUNIT
+  systemctl daemon-reload
+fi
+/usr/sbin/sshd -t || fail 'Неверная защищённая конфигурация SSH.'
+SSH_EFFECTIVE=$(/usr/sbin/sshd -T -C "user=${SSH_USER},host=localhost,addr=127.0.0.1")
+ROOT_EFFECTIVE=$(/usr/sbin/sshd -T -C 'user=root,host=localhost,addr=127.0.0.1')
+[[ "$(printf '%s\n' "$SSH_EFFECTIVE" | awk '$1=="port" {print $2}' | sort -u)" == "$SSH_PORT" ]] || fail 'Обнаружен лишний SSH-порт.'
+for expected in \
+    'pubkeyauthentication yes' \
+    'passwordauthentication no' \
+    'kbdinteractiveauthentication no' \
+    'authenticationmethods publickey'; do
+  printf '%s\n' "$SSH_EFFECTIVE" | grep -qx "$expected" || fail "SSH не применил параметр: $expected"
+done
+printf '%s\n' "$ROOT_EFFECTIVE" | grep -qx 'permitrootlogin no' || fail 'SSH по-прежнему разрешает вход root.'
+if ((SSH_SOCKET_ACTIVE)) && systemctl is-active --quiet ssh.socket; then
+  systemctl restart ssh.socket
+fi
+systemctl restart ssh.service
+ss -H -ltn "sport = :${SSH_PORT}" | grep -q . || fail 'SSH не слушает порт 1335 после изменений.'
+ufw --force delete allow OpenSSH >/dev/null 2>&1 || true
+ufw --force delete allow 22/tcp >/dev/null 2>&1 || true
+ufw insert 1 deny 22/tcp
+rm -f -- "$VERIFY_MARKER"
+info "$(msg 'SSH проверен: пользователь с ключом на 1335; root и вход по паролю отключены.' 'SSH verified: key-only user on 1335; root and password login disabled.')"
+
+# 5 - Fail2ban (journal backend works with Ubuntu 22.04 and 24.04).
 CURRENT_STAGE='Настройка Fail2ban'
-info "$(msg '4/7 — Настройка Fail2ban' '4/7 - Fail2ban')"
+step "$(msg '5/8 — Настройка Fail2ban' '5/8 - Fail2ban')"
 mkdir -p /etc/fail2ban/jail.d
 F2B_FILE=/etc/fail2ban/jail.d/99-3ax-sshd.local
 [[ ! -f "$F2B_FILE" ]] || cp -a "$F2B_FILE" "$BACKUP_DIR/fail2ban-previous.local"
@@ -245,9 +352,9 @@ if [[ -n "$TRUSTED_IP" ]]; then
   fail2ban-client set sshd unbanip "$TRUSTED_IP" >/dev/null 2>&1 || true
 fi
 
-# 5 - Cloudflare IPv4+IPv6 with Quad9 fallback.
+# 6 - Cloudflare IPv4+IPv6 with Quad9 fallback.
 CURRENT_STAGE='Настройка DNS и Netplan'
-info "$(msg '5/7 — DNS Cloudflare и Quad9 (IPv4/IPv6)' '5/7 - Cloudflare and Quad9 DNS (IPv4/IPv6)')"
+step "$(msg '6/8 — DNS Cloudflare и Quad9 (IPv4/IPv6)' '6/8 - Cloudflare and Quad9 DNS (IPv4/IPv6)')"
 mkdir -p /etc/systemd/resolved.conf.d
 RESOLVED_FILE=/etc/systemd/resolved.conf.d/90-3ax-dns.conf
 [[ ! -f "$RESOLVED_FILE" ]] || cp -a "$RESOLVED_FILE" "$BACKUP_DIR/resolved-previous.conf"
@@ -311,9 +418,9 @@ else
 fi
 resolvectl status || true
 
-# 6 - Download and invoke the upstream installer; skip only its nginx step.
+# 7 - Download and invoke the upstream installer; skip only its nginx step.
 CURRENT_STAGE='Установка 3AX-UI'
-info "$(msg '6/7 — Установка 3AX-UI' '6/7 - Installing 3AX-UI')"
+step "$(msg '7/8 — Установка 3AX-UI' '7/8 - Installing 3AX-UI')"
 systemctl disable --now nginx 2>/dev/null || true
 if ss -H -ltn 'sport = :80' | grep -q .; then
   fail 'Port 80 is in use. Free this port before requesting a 3AX-UI certificate.'
@@ -332,9 +439,9 @@ echo "$(msg 'Установщик покажет временный пароль
 # Do not pipe output to tee/log: the upstream installer may reveal credentials.
 bash "$UPSTREAM_SCRIPT"
 
-# 7 - Check the actual panel settings and issue credentials for the final summary.
+# 8 - Check the actual panel settings and issue credentials for the final summary.
 CURRENT_STAGE='Проверка панели и подготовка реквизитов входа'
-info "$(msg '7/7 — Проверка панели' '7/7 - Verifying panel')"
+step "$(msg '8/8 — Проверка панели' '8/8 - Verifying panel')"
 systemctl is-active --quiet x-ui || fail 'Сервис x-ui не запустился: systemctl status x-ui'
 fail2ban-client status sshd >/dev/null || fail 'Fail2ban jail sshd не работает.'
 LC_ALL=C ufw status | grep -q '^Status: active' || fail 'UFW не активен.'
@@ -366,20 +473,90 @@ if [[ -z "$PANEL_HOST" ]]; then
 fi
 [[ -n "$PANEL_HOST" ]] || fail 'Не найден адрес в SSL-сертификате. Проверьте сертификат вручную.'
 
-# Upstream initially prints a password, but only its hash is stored.
-# Generate our own strong, one-time credentials and apply them through its CLI.
-CURRENT_STAGE='Назначение логина и пароля панели'
-NEW_LOGIN="admin_$(python3 -c 'import secrets, string; print("".join(secrets.choice(string.ascii_lowercase+string.digits) for _ in range(8)))')"
-NEW_PASSWORD=$(python3 -c 'import secrets, string; print("".join(secrets.choice(string.ascii_letters+string.digits) for _ in range(24)))')
-"$PANEL_BIN" setting -username "$NEW_LOGIN" -password "$NEW_PASSWORD" >/dev/null 2>&1 || fail 'Не удалось назначить логин и пароль панели.'
-systemctl restart x-ui || fail 'Не удалось перезапустить x-ui после смены логина.'
-systemctl is-active --quiet x-ui || fail 'Панель не запустилась после смены логина.'
+# The upstream installer prints one-time credentials, but stores only the
+# password hash. Ask for the FINAL credentials and URL path, then apply them.
+# None of these secrets goes to GitHub, files, or the installer log.
+CURRENT_STAGE='Настройка итоговых реквизитов панели'
+step "$(msg 'Данные панели: свои или случайные' 'Panel login: custom or randomly generated')"
+info "$(msg 'Выберите способ задания для каждого параметра отдельно.' 'Choose generation or custom entry for each field.')"
+
+random_alnum() {
+  python3 - "$1" <<'PY_RANDOM'
+import secrets
+import string
+import sys
+alphabet = string.ascii_letters + string.digits
+print(''.join(secrets.choice(alphabet) for _ in range(int(sys.argv[1]))))
+PY_RANDOM
+}
+
+ask_choice() {
+  local label_ru="$1" label_en="$2" answer
+  while true; do
+    read -r -p "$(msg "$label_ru" "$label_en") [1/2, Enter=1]: " answer
+    case "$answer" in
+      ''|1) CHOICE=1; return 0 ;;
+      2) CHOICE=2; return 0 ;;
+      *) warn "$(msg 'Введите 1 или 2.' 'Enter 1 or 2.')" ;;
+    esac
+  done
+}
+
+# The username is not an OS account. Restrict input to a predictable safe set.
+ask_choice 'Логин панели: 1 = сгенерировать, 2 = свой' 'Panel username: 1 = generate, 2 = custom'
+if [[ "$CHOICE" == 1 ]]; then
+  NEW_LOGIN="admin_$(random_alnum 10)"
+else
+  read -r -p "$(msg 'Введите логин (4-32 символа, латиница/цифры/_/-): ' 'Panel username (4-32 ASCII letters/digits/_/-): ')" NEW_LOGIN
+  [[ "$NEW_LOGIN" =~ ^[A-Za-z][A-Za-z0-9_-]{3,31}$ ]] || fail 'Некорректный логин панели.'
+fi
+
+ask_choice 'Пароль панели: 1 = сгенерировать, 2 = свой' 'Panel password: 1 = generate, 2 = custom'
+if [[ "$CHOICE" == 1 ]]; then
+  NEW_PASSWORD=$(random_alnum 30)
+else
+  read -r -s -p "$(msg 'Введите пароль панели (минимум 12 символов, ввод скрыт): ' 'Panel password (at least 12 characters, hidden): ')" NEW_PASSWORD
+  printf '\n'
+  read -r -s -p "$(msg 'Повторите пароль панели: ' 'Repeat panel password: ')" CONFIRM_PANEL_PASSWORD
+  printf '\n'
+  [[ "$NEW_PASSWORD" == "$CONFIRM_PANEL_PASSWORD" ]] || fail 'Пароли панели не совпадают.'
+  unset CONFIRM_PANEL_PASSWORD
+  [[ ${#NEW_PASSWORD} -ge 12 && ${#NEW_PASSWORD} -le 128 ]] || fail 'Пароль панели должен содержать от 12 до 128 символов.'
+  # Avoid control characters. Whitespace is allowed but not leading/trailing.
+  [[ "$NEW_PASSWORD" != *[$'\001'-$'\037']* ]] || fail 'Пароль панели содержит управляющие символы.'
+fi
+
+ask_choice 'Корневой путь URL: 1 = сгенерировать, 2 = свой' 'Panel URL base path: 1 = generate, 2 = custom'
+if [[ "$CHOICE" == 1 ]]; then
+  NEW_WEB_BASE_PATH=$(random_alnum 24)
+else
+  read -r -p "$(msg 'Введите путь, например mySecretPanel (можно с /): ' 'URL path, e.g. mySecretPanel (optional /): ')" NEW_WEB_BASE_PATH
+  NEW_WEB_BASE_PATH="${NEW_WEB_BASE_PATH#/}"
+  NEW_WEB_BASE_PATH="${NEW_WEB_BASE_PATH%/}"
+  [[ "$NEW_WEB_BASE_PATH" =~ ^[A-Za-z0-9_-]{6,64}$ ]] || fail 'Корневой путь: от 6 до 64 символов, только латиница/цифры/_/- и без вложенных /.'
+fi
+
+info "$(msg 'Реквизиты выбраны, применяем через штатную команду 3AX-UI.' 'Credentials chosen; applying via the official 3AX-UI command.')"
+# Do not enable set -x or tee around these calls: -password is an argument.
+"$PANEL_BIN" setting -username "$NEW_LOGIN" -password "$NEW_PASSWORD" -webBasePath "$NEW_WEB_BASE_PATH" >/dev/null 2>&1 || fail 'Не удалось сохранить логин, пароль или путь панели.'
+# These values are intentionally kept in memory and printed only in the final status.
 FINAL_LOGIN="$NEW_LOGIN"
 FINAL_PASSWORD="$NEW_PASSWORD"
-FINAL_URL="https://${PANEL_HOST}:${CONFIG_PORT}/${CONFIG_PATH#/}"
+systemctl restart x-ui || fail 'Не удалось перезапустить панель после изменения реквизитов.'
+systemctl is-active --quiet x-ui || fail 'Сервис x-ui не запустился после изменения реквизитов.'
+
+VERIFY_SETTINGS=$("$PANEL_BIN" setting -show true) || fail 'Не удалось проверить итоговые настройки панели.'
+VERIFY_PORT=$(printf '%s\n' "$VERIFY_SETTINGS" | sed -nE 's/^[[:space:]]*port:[[:space:]]*([0-9]+).*/\1/p' | head -n1)
+VERIFY_PATH=$(printf '%s\n' "$VERIFY_SETTINGS" | sed -nE 's#^[[:space:]]*webBasePath:[[:space:]]*/?([^[:space:]]+).*#\1#p' | head -n1)
+# x-ui may normalize WebBasePath to /name/ rather than name.
+VERIFY_PATH="${VERIFY_PATH#/}"
+VERIFY_PATH="${VERIFY_PATH%/}"
+[[ "$VERIFY_PORT" == "$PANEL_PORT" && "$VERIFY_PATH" == "$NEW_WEB_BASE_PATH" ]] || fail 'Итоговые порт или URL-путь панели не совпали с заданными.'
+ss -H -ltn "sport = :${PANEL_PORT}" | grep -q . || fail 'После смены реквизитов панель не слушает порт 13350.'
+FINAL_URL="https://${PANEL_HOST}:${PANEL_PORT}/${NEW_WEB_BASE_PATH}/"
 
 CURRENT_STAGE='Завершение'
 if [[ -f /var/run/reboot-required ]]; then
   warn "$(msg 'После обновления потребуется перезагрузка (не делайте её до проверки нового SSH-порта).' 'Reboot required after checking SSH access.')"
 fi
-warn "$(msg 'Старые порты SSH пока открыты: закройте их после проверки подключения на 1335.' 'Old SSH port(s) remain open until 1335 is tested.')"
+warn "$(msg 'Проверьте вход по SSH-ключу на 1335 после установки. Веб-консоль пока не закрывайте.' 'Test key-based SSH on 1335 after setup. Keep provider console available.')"
