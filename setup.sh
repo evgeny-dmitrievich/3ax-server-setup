@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 3AX-UI VPS bootstrap — Ubuntu 22.04 / 24.04
+# 3AX-UI VPS bootstrap - Ubuntu 22.04 / 24.04
 # Run on a NEW VPS from the hosting provider's rescue/web console.
 set -Eeuo pipefail
 umask 077
@@ -13,43 +13,43 @@ readonly UPSTREAM_URL='https://raw.githubusercontent.com/coinman-dev/3ax-ui/main
 fail() { printf '\n[ERROR] %s\n' "$*" >&2; exit 1; }
 info() { printf '\n[INFO] %s\n' "$*"; }
 warn() { printf '\n[WARN] %s\n' "$*" >&2; }
-trap 'warn "Ошибка на строке $LINENO (код $?). Настройки не были автоматически откатаны. Используй веб-консоль и резервные копии."' ERR
+trap 'warn "Error at line $LINENO (exit code $?). Changes were not automatically rolled back. Use the provider web console and backups."' ERR
 
-[[ "$EUID" -eq 0 ]] || fail 'Запусти: sudo bash setup.sh'
-[[ -t 0 ]] || fail 'Нужна интерактивная консоль: установщик 3AX-UI задаёт вопросы.'
-[[ -r /etc/os-release ]] || fail 'Не удалось определить ОС.'
+[[ "$EUID" -eq 0 ]] || fail 'Run: sudo bash setup.sh'
+[[ -t 0 ]] || fail 'An interactive terminal is required: the 3AX-UI installer asks questions.'
+[[ -r /etc/os-release ]] || fail 'Could not detect the operating system.'
 # shellcheck source=/dev/null
 . /etc/os-release
-[[ "${ID:-}" == ubuntu ]] || fail 'Поддерживается только Ubuntu.'
-[[ "${VERSION_ID:-}" == '22.04' || "${VERSION_ID:-}" == '24.04' ]] || fail 'Нужна Ubuntu 22.04 или 24.04.'
+[[ "${ID:-}" == ubuntu ]] || fail 'Only Ubuntu is supported.'
+[[ "${VERSION_ID:-}" == '22.04' || "${VERSION_ID:-}" == '24.04' ]] || fail 'Ubuntu 22.04 or 24.04 is required.'
 
 if [[ -e /usr/bin/x-ui || -e /usr/local/x-ui/x-ui ]]; then
-  fail '3AX-UI уже установлена. Скрипт предназначен для нового сервера и не переустанавливает панель.'
+  fail '3AX-UI appears to be installed already. This script is intended for a fresh server.'
 fi
 
 BACKUP_DIR="/root/3ax-setup-backup-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$BACKUP_DIR"
 chmod 700 "$BACKUP_DIR"
-info "ОС: Ubuntu ${VERSION_ID}; каталог копий: ${BACKUP_DIR}"
-echo 'Внимание: скрипт изменит SSH, UFW, Fail2ban и DNS.'
-echo 'Для безопасности старый SSH-порт будет сохранён до проверки входа на 1335.'
-echo 'На нестандартных сетевых схемах изменение Netplan пропускается.'
+info "OS: Ubuntu ${VERSION_ID}; backup directory: ${BACKUP_DIR}"
+echo 'WARNING: This script will change SSH, UFW, Fail2ban, and DNS settings.'
+echo 'Existing SSH port(s) will remain open until you verify access on port 1335.'
+echo 'Netplan changes will be skipped for unrecognized network configurations.'
 if [[ -n "${SSH_CONNECTION:-}${SSH_TTY:-}" ]]; then
-  warn 'Запуск через SSH: предпочтительнее веб-консоль хостинга; Netplan применяться НЕ будет.'
+  warn 'Running over SSH. Provider web console is preferred; Netplan changes will be skipped.'
 fi
-read -r -p 'Это новый VPS и есть доступ к веб-консоли хостинга? Введи YES: ' CONFIRM
-[[ "$CONFIRM" == 'YES' ]] || fail 'Отменено.'
-read -r -p 'Доверенный IPv4 для Fail2ban ignoreip (можно пусто): ' TRUSTED_IP
+read -r -p 'Is this a fresh VPS with provider web console access? Type YES to continue: ' CONFIRM
+[[ "$CONFIRM" == 'YES' ]] || fail 'Cancelled.'
+read -r -p 'Trusted IPv4 address for Fail2ban ignoreip (leave blank to skip): ' TRUSTED_IP
 if [[ -n "$TRUSTED_IP" ]]; then
-  [[ "$TRUSTED_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || fail 'Некорректный формат IPv4.'
+  [[ "$TRUSTED_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || fail 'Invalid IPv4 address format.'
   IFS=. read -r a b c d <<< "$TRUSTED_IP"
   for octet in "$a" "$b" "$c" "$d"; do
-    (( 10#$octet <= 255 )) || fail 'Некорректный IPv4.'
+    (( 10#$octet <= 255 )) || fail 'Invalid IPv4 address.'
   done
 fi
 
-# 1 — Update and essential packages.
-info '1/7 — обновление и пакеты'
+# 1 - Update and essential packages.
+info '1/7 - System updates and packages'
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get upgrade -y
@@ -57,12 +57,12 @@ apt-get install -y ca-certificates curl openssh-server fail2ban python3-systemd 
 if [[ "$(uname -r)" == *-generic ]]; then
   apt-get install -y linux-generic linux-headers-generic
 else
-  warn "Текущее ядро $(uname -r) нестандартное. Пакет linux-generic принудительно не устанавливаем."
-  apt-get install -y "linux-headers-$(uname -r)" || warn 'Заголовки текущего ядра не найдены; проверь поддержку DKMS.'
+  warn "Nonstandard kernel: $(uname -r). Skipping forced installation of linux-generic."
+  apt-get install -y "linux-headers-$(uname -r)" || warn 'Kernel headers not found; check DKMS support.'
 fi
 
-# 2 — Open ports BEFORE restarting SSH or enabling UFW.
-info '2/7 — правила UFW'
+# 2 - Open ports BEFORE restarting SSH or enabling UFW.
+info '2/7 - UFW firewall rules'
 cp -a /etc/default/ufw "$BACKUP_DIR/ufw-default"
 sed -i -E 's/^IPV6=.*/IPV6=yes/' /etc/default/ufw
 # Keep existing SSH listeners reachable for safety, even on a nonstandard VPS.
@@ -84,13 +84,13 @@ ufw default allow outgoing
 ufw --force enable
 ufw status verbose
 
-# 3 — Add SSH 1335 while retaining the currently working port(s).
-info '3/7 — SSH: добавляем порт 1335 без отключения старых'
+# 3 - Add SSH 1335 while retaining the currently working port(s).
+info '3/7 - SSH: add port 1335 without closing existing ports'
 cp -a /etc/ssh "$BACKUP_DIR/ssh"
 mkdir -p /etc/ssh/sshd_config.d
 SSH_DROPIN=/etc/ssh/sshd_config.d/00-3ax-setup.conf
 if ! grep -Eq '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config.d/\*' /etc/ssh/sshd_config; then
-  warn 'В sshd_config нет стандартного Include. Добавляем его в начало файла.'
+  warn 'Standard Include is missing in sshd_config; adding it at the top.'
   { echo 'Include /etc/ssh/sshd_config.d/*.conf'; cat /etc/ssh/sshd_config; } > "$BACKUP_DIR/sshd_config.new"
   cp "$BACKUP_DIR/sshd_config.new" /etc/ssh/sshd_config
 fi
@@ -110,19 +110,19 @@ if systemctl is-active --quiet ssh.socket || systemctl is-enabled --quiet ssh.so
   } > /etc/systemd/system/ssh.socket.d/90-3ax-setup.conf
   systemctl daemon-reload
 fi
-/usr/sbin/sshd -t || fail 'Конфигурация SSH некорректна: восстанови каталог /etc/ssh из резервной копии.'
+/usr/sbin/sshd -t || fail 'Invalid SSH configuration. Restore /etc/ssh from the backup if needed.'
 /usr/sbin/sshd -T | awk -v p="$SSH_PORT" '$1 == "port" && $2 == p {found=1} END {exit !found}' || \
-  fail 'sshd не принимает порт 1335; смотри другие файлы конфигурации SSH.'
+  fail 'sshd does not report port 1335. Check other SSH configuration files.'
 if systemctl is-active --quiet ssh.socket; then
   systemctl restart ssh.socket
 fi
 systemctl restart ssh.service
 ss -H -ltn "sport = :${SSH_PORT}" | grep -q . || \
-  fail 'Порт 1335 не слушается. Проверь ssh.service и ssh.socket в веб-консоли.'
-info 'SSH слушает 1335; старый порт пока остаётся доступен.'
+  fail 'Port 1335 is not listening. Check ssh.service and ssh.socket via the provider console.'
+info 'SSH is listening on port 1335; existing SSH ports remain open for now.'
 
-# 4 — Fail2ban (journal backend works with Ubuntu 22.04 and 24.04).
-info '4/7 — Fail2ban'
+# 4 - Fail2ban (journal backend works with Ubuntu 22.04 and 24.04).
+info '4/7 - Fail2ban'
 mkdir -p /etc/fail2ban/jail.d
 F2B_FILE=/etc/fail2ban/jail.d/99-3ax-sshd.local
 [[ ! -f "$F2B_FILE" ]] || cp -a "$F2B_FILE" "$BACKUP_DIR/fail2ban-previous.local"
@@ -144,13 +144,13 @@ for _ in 1 2 3 4 5; do
   if fail2ban-client status sshd; then break; fi
   sleep 2
 done
-fail2ban-client status sshd >/dev/null || fail 'Не активировался Fail2ban jail sshd.'
+fail2ban-client status sshd >/dev/null || fail 'Fail2ban sshd jail did not become active.'
 if [[ -n "$TRUSTED_IP" ]]; then
   fail2ban-client set sshd unbanip "$TRUSTED_IP" >/dev/null 2>&1 || true
 fi
 
-# 5 — Cloudflare IPv4+IPv6 with Quad9 fallback.
-info '5/7 — DNS Cloudflare + Quad9 (IPv4 и IPv6)'
+# 5 - Cloudflare IPv4+IPv6 with Quad9 fallback.
+info '5/7 - Cloudflare + Quad9 DNS (IPv4 and IPv6)'
 mkdir -p /etc/systemd/resolved.conf.d
 RESOLVED_FILE=/etc/systemd/resolved.conf.d/90-3ax-dns.conf
 [[ ! -f "$RESOLVED_FILE" ]] || cp -a "$RESOLVED_FILE" "$BACKUP_DIR/resolved-previous.conf"
@@ -172,7 +172,7 @@ if [[ -z "${SSH_CONNECTION:-}${SSH_TTY:-}" ]] && command -v netplan >/dev/null 2
     cp -a /etc/netplan/. "$BACKUP_DIR/netplan/"
     NETPLAN_FILE=/etc/netplan/99-3ax-cloudflare-dns.yaml
     if [[ -f "$NETPLAN_FILE" ]]; then
-      warn 'Netplan-файл уже существует: оставляем текущий без изменений.'
+      warn 'The Netplan override file already exists; leaving it unchanged.'
     else
       cat > "$NETPLAN_FILE" <<NETPLAN
 network:
@@ -192,66 +192,66 @@ network:
 NETPLAN
       chmod 600 "$NETPLAN_FILE"
       if ! netplan generate; then
-        warn 'Netplan generate не прошёл; дополнительный YAML удалён.'
+        warn 'Netplan generate failed; removing the added YAML file.'
         rm -f "$NETPLAN_FILE"
         netplan generate || true
       else
-        info 'Netplan попробует изменения и откатит их через 120 секунд без подтверждения.'
+        info 'Netplan will try the changes and roll back after 120 seconds unless confirmed.'
         if netplan try --timeout 120; then
-          info 'Netplan подтверждён.'
+          info 'Netplan configuration confirmed.'
         else
-          warn 'Netplan не подтверждён — отменяем дополнительный файл.'
+          warn 'Netplan was not confirmed; removing the added YAML file.'
           rm -f "$NETPLAN_FILE"
           netplan generate || true
         fi
       fi
     fi
   else
-    warn 'Netplan автоматически не изменён: DHCP-интерфейс не распознан.'
+    warn 'Netplan left unchanged: no recognized DHCP interface.'
   fi
 else
-  warn 'Netplan не меняем: запуск через SSH или netplan отсутствует.'
+  warn 'Netplan skipped: running over SSH or netplan is not installed.'
 fi
 resolvectl status || true
 
-# 6 — Download and invoke the upstream installer; skip only its nginx step.
-info '6/7 — установка 3AX-UI'
+# 6 - Download and invoke the upstream installer; skip only its nginx step.
+info '6/7 - Installing 3AX-UI'
 systemctl disable --now nginx 2>/dev/null || true
 if ss -H -ltn 'sport = :80' | grep -q .; then
-  fail 'Порт 80 занят. Освободи его перед получением сертификата 3AX-UI.'
+  fail 'Port 80 is in use. Free this port before requesting a 3AX-UI certificate.'
 fi
 UPSTREAM_SCRIPT="${BACKUP_DIR}/3ax-upstream-install.sh"
 curl -fLsS --retry 3 --connect-timeout 15 "$UPSTREAM_URL" -o "$UPSTREAM_SCRIPT"
-[[ -s "$UPSTREAM_SCRIPT" ]] || fail 'Не удалось скачать установщик панели.'
+[[ -s "$UPSTREAM_SCRIPT" ]] || fail 'Failed to download the 3AX-UI installer.'
 # Guard against unexpected upstream changes: do not blindly patch other code.
 COUNT=$(grep -Ec '^install_nginx[[:space:]]*$' "$UPSTREAM_SCRIPT" || true)
-[[ "$COUNT" -eq 1 ]] || fail 'Структура установщика 3AX-UI изменилась; нужна ручная проверка.'
+[[ "$COUNT" -eq 1 ]] || fail 'The 3AX-UI installer structure has changed; manual review is required.'
 sed -i -E 's/^install_nginx[[:space:]]*$/# nginx skipped by 3ax-server-setup/' "$UPSTREAM_SCRIPT"
-bash -n "$UPSTREAM_SCRIPT" || fail 'Ошибка синтаксиса скачанного установщика.'
-info "SHA256 проверяемого экземпляра: $(sha256sum "$UPSTREAM_SCRIPT" | awk '{print $1}')"
-echo 'При запросах установщика: Debug mode = N; пользовательский порт панели = Y, порт = 13350; HTTP-01 = 80.'
-echo 'Ниже появятся логин и пароль панели: НЕ публикуй их и не отправляй скриншоты с ними.'
+bash -n "$UPSTREAM_SCRIPT" || fail 'Downloaded 3AX-UI installer has a Bash syntax error.'
+info "Downloaded installer SHA256: $(sha256sum "$UPSTREAM_SCRIPT" | awk '{print $1}')"
+echo 'Installer choices: Debug mode = N; Custom panel port = Y; Panel port = 13350; HTTP-01 = 80.'
+echo 'The installer may display panel credentials below. Do NOT publish or share them.'
 # Do not pipe output to tee/log: the upstream installer may reveal credentials.
 bash "$UPSTREAM_SCRIPT"
 
-# 7 — Checks and next steps.
-info '7/7 — проверка'
+# 7 - Checks and next steps.
+info '7/7 - Verification'
 if systemctl is-active --quiet x-ui; then
   echo '3AX-UI: service active'
 else
-  warn '3AX-UI: проверь systemctl status x-ui и журнал установки.'
+  warn '3AX-UI: check systemctl status x-ui and the installation output.'
 fi
 fail2ban-client status sshd || true
 ufw status verbose
 ss -tuln
 resolvectl status || true
 printf '\n======================================\n'
-echo 'Готово. Проверь SSH с другого терминала: ssh -p 1335 root@IP_СЕРВЕРА'
-echo 'Пока НЕ закрывай текущую консоль; старый SSH-порт сохранён намеренно.'
-echo 'После проверки SSH на 1335 старый порт необходимо отключить в sshd, ssh.socket и UFW.'
-echo 'Проверь, что порт панели фактически установлен на 13350.'
-echo '443/tcp намеренно не добавлен.'
-echo "Бэкапы: ${BACKUP_DIR}"
+echo 'Finished. Test SSH from another terminal: ssh -p 1335 root@SERVER_IP'
+echo 'Do NOT close this console yet; the old SSH port remains open intentionally.'
+echo 'After verifying SSH on port 1335, remove the old port from sshd, ssh.socket, and UFW.'
+echo 'Confirm that the panel is actually configured to use port 13350.'
+echo '443/tcp was intentionally not opened.'
+echo "Backups: ${BACKUP_DIR}"
 if [[ -f /var/run/reboot-required ]]; then
-  warn 'Системе требуется перезагрузка. Запланируй её после проверки доступа; DKMS может зависеть от нового ядра.'
+  warn 'Reboot required. Schedule it after verifying access; DKMS may depend on the new kernel.'
 fi
