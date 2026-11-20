@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# 3AX-UI VPS bootstrap v0.5 - Ubuntu 22.04 / 24.04
+# 3AX-UI VPS bootstrap v0.6 - Ubuntu 22.04 / 24.04
 # Run on a NEW VPS from the hosting provider's rescue/web console.
 set -Eeuo pipefail
 umask 077
 
 readonly SSH_PORT=1335
 readonly PANEL_PORT=13350
+readonly VERIFY_MARKER='/run/3ax-ssh-verified'
 # Do not publish a personal trusted address in a public GitHub repository.
 TRUSTED_IP=''
 readonly UPSTREAM_URL='https://raw.githubusercontent.com/coinman-dev/3ax-ui/main/install.sh'
@@ -279,10 +280,9 @@ fi
 systemctl restart ssh.service
 ss -H -ltn "sport = :${SSH_PORT}" | grep -q . || fail 'SSH не слушает порт 1335.'
 
-# The backup directory already exists and persists across reboots.
-# Avoid ephemeral /run/ markers or paths that the second SSH session cannot find.
-VERIFY_MARKER="$BACKUP_DIR/ssh-verified"
-[[ -d "$BACKUP_DIR" ]] || fail 'Missing verification directory (backup directory).'
+# A short fixed path is easier to copy into a second SSH session.
+# /run itself always exists on a running Ubuntu system. Remove any stale marker.
+[[ -d /run ]] || fail 'Missing /run mount (unexpected system state).'
 rm -f -- "$VERIFY_MARKER"
 printf '\n%s\n' "$(msg 'ПРОВЕРКА: откройте ВТОРОЙ терминал на своём компьютере, НЕ закрывая консоль хостинга.' 'VERIFICATION: open a SECOND terminal on your computer. Keep this console open.')"
 printf 'ssh -o PreferredAuthentications=publickey -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -p %s %s@%s\n' "$SSH_PORT" "$SSH_USER" 'SERVER_IP'
@@ -456,9 +456,34 @@ echo "$(msg 'Установщик покажет временный пароль
 bash "$UPSTREAM_SCRIPT"
 
 # 8 - Check the actual panel settings and issue credentials for the final summary.
+# systemctl restart can return before the application opens its TCP listener.
+wait_panel_listener() {
+  local expected_port="$1" elapsed
+  for ((elapsed=0; elapsed<45; elapsed++)); do
+    if systemctl is-active --quiet x-ui && \
+       ss -H -ltn "sport = :${expected_port}" | grep -q .; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+check_panel_remote_bind() {
+  local expected_port="$1" bound_addresses
+  bound_addresses=$(ss -H -ltn "sport = :${expected_port}" | awk '{print $4}')
+  [[ -n "$bound_addresses" ]] || return 1
+  # Listening on loopback alone is not reachable from a browser outside the VPS.
+  if ! printf '%s\n' "$bound_addresses" | grep -Evq '^(127\.[0-9.]+|\[::1\]|::1|localhost):[0-9]+$'; then
+    return 1
+  fi
+  return 0
+}
+
 CURRENT_STAGE='Проверка панели и подготовка реквизитов входа'
 step "$(msg '8/8 — Проверка панели' '8/8 - Verifying panel')"
-systemctl is-active --quiet x-ui || fail 'Сервис x-ui не запустился: systemctl status x-ui'
+wait_panel_listener "$PANEL_PORT" || fail '3AX-UI не открыла порт 13350 за 45 секунд. Проверьте: systemctl status x-ui; journalctl -u x-ui -n 50 --no-pager; x-ui setting -show true.'
+check_panel_remote_bind "$PANEL_PORT" || fail 'Порт панели доступен только локально (127.0.0.1/::1). Проверьте x-ui setting -getListen true.'
 fail2ban-client status sshd >/dev/null || fail 'Fail2ban jail sshd не работает.'
 LC_ALL=C ufw status | grep -q '^Status: active' || fail 'UFW не активен.'
 PANEL_BIN='/usr/local/x-ui/x-ui'
@@ -554,12 +579,23 @@ fi
 
 info "$(msg 'Реквизиты выбраны, применяем через штатную команду 3AX-UI.' 'Credentials chosen; applying via the official 3AX-UI command.')"
 # Do not enable set -x or tee around these calls: -password is an argument.
-"$PANEL_BIN" setting -username "$NEW_LOGIN" -password "$NEW_PASSWORD" -webBasePath "$NEW_WEB_BASE_PATH" >/dev/null 2>&1 || fail 'Не удалось сохранить логин, пароль или путь панели.'
-# These values are intentionally kept in memory and printed only in the final status.
+# Explicitly keep port 13350 in addition to the requested credentials/path.
+# The upstream CLI may print per-setting errors while still returning exit code 0.
+# Capture output in memory only, without publishing credentials or a logfile.
+if ! SETTING_RESULT=$("$PANEL_BIN" setting \
+  -username "$NEW_LOGIN" -password "$NEW_PASSWORD" \
+  -port "$PANEL_PORT" -webBasePath "$NEW_WEB_BASE_PATH" 2>&1); then
+  fail 'Команда изменения параметров панели завершилась с ошибкой.'
+fi
+if printf '%s\n' "$SETTING_RESULT" | grep -Eiq '(^|[[:space:]])(failed|error|ошибка)([[:space:]:]|$)'; then
+  unset SETTING_RESULT
+  fail '3AX-UI сообщила об ошибке сохранения параметров панели.'
+fi
+unset SETTING_RESULT
+# These values are intentionally kept only in memory for the final status.
 FINAL_LOGIN="$NEW_LOGIN"
 FINAL_PASSWORD="$NEW_PASSWORD"
 systemctl restart x-ui || fail 'Не удалось перезапустить панель после изменения реквизитов.'
-systemctl is-active --quiet x-ui || fail 'Сервис x-ui не запустился после изменения реквизитов.'
 
 VERIFY_SETTINGS=$("$PANEL_BIN" setting -show true) || fail 'Не удалось проверить итоговые настройки панели.'
 VERIFY_PORT=$(printf '%s\n' "$VERIFY_SETTINGS" | sed -nE 's/^[[:space:]]*port:[[:space:]]*([0-9]+).*/\1/p' | head -n1)
@@ -568,7 +604,11 @@ VERIFY_PATH=$(printf '%s\n' "$VERIFY_SETTINGS" | sed -nE 's#^[[:space:]]*webBase
 VERIFY_PATH="${VERIFY_PATH#/}"
 VERIFY_PATH="${VERIFY_PATH%/}"
 [[ "$VERIFY_PORT" == "$PANEL_PORT" && "$VERIFY_PATH" == "$NEW_WEB_BASE_PATH" ]] || fail 'Итоговые порт или URL-путь панели не совпали с заданными.'
-ss -H -ltn "sport = :${PANEL_PORT}" | grep -q . || fail 'После смены реквизитов панель не слушает порт 13350.'
+if ! wait_panel_listener "$PANEL_PORT"; then
+  POST_PORT=$("$PANEL_BIN" setting -show true 2>/dev/null | sed -nE 's/^[[:space:]]*port:[[:space:]]*([0-9]+).*/\1/p' | head -n1 || true)
+  fail "После смены параметров панель не открыла порт ${PANEL_PORT} за 45 секунд (настроенный порт: ${POST_PORT:-неизвестен}). Проверьте systemctl status x-ui и journalctl -u x-ui -n 50 --no-pager."
+fi
+check_panel_remote_bind "$PANEL_PORT" || fail 'После смены параметров панель слушает только локальный интерфейс. Проверьте x-ui setting -getListen true.'
 FINAL_URL="https://${PANEL_HOST}:${PANEL_PORT}/${NEW_WEB_BASE_PATH}/"
 
 CURRENT_STAGE='Завершение'
